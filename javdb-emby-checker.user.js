@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         JAVDB全能助手
 // @namespace    http://tampermonkey.net/
-// @version      0.2.0
+// @version      0.3.0
 // @description  JAVDB + EMBY 联动脚本：实时同步入库状态、预览图查看、磁力链管理、多站点搜索
 // @author       by：潇洒公子
 // @icon         data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNTYgMjU2Ij48ZGVmcz48bGluZWFyR3JhZGllbnQgaWQ9ImEiIHgxPSIwJSIgeTE9IjAlIiB4Mj0iMTAwJSIgeTI9IjEwMCUiPjxzdG9wIG9mZnNldD0iMCUiIHN0eWxlPSJzdG9wLWNvbG9yOiMwMGFjZWE7c3RvcC1vcGFjaXR5OjEiLz48c3RvcCBvZmZzZXQ9IjEwMCUiIHN0eWxlPSJzdG9wLWNvbG9yOiM1MmJlODA7c3RvcC1vcGFjaXR5OjEiLz48L2xpbmVhckdyYWRpZW50PjwvZGVmcz48cmVjdCB3aWR0aD0iMjU2IiBoZWlnaHQ9IjI1NiIgZmlsbD0idXJsKCNhKSIvPjx0ZXh0IHg9IjUwJSIgeT0iNTAlIiBmb250LWZhbWlseT0iQXJpYWwsIHNhbnMtc2VyaWYiIGZvbnQtc2l6ZT0iMTIwIiBmb250LXdlaWdodD0iYm9sZCIgZmlsbD0iI2ZmZiIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZG9taW5hbnQtYmFzZWxpbmU9Im1pZGRsZSI+SkQ8L3RleHQ+PC9zdmc+
@@ -35,6 +35,266 @@
     console.log('当前 URL:', window.location.href);
     console.log('当前路径:', window.location.pathname);
     console.log('查询参数:', window.location.search);
+    
+    // 立即检查页面类型
+    const isDetailPage = window.location.pathname.startsWith('/v/');
+    console.log('是否是详情页:', isDetailPage);
+    if (isDetailPage) {
+        console.log('✅ 详情页检测通过，将在2秒后添加双标签磁力链');
+    } else {
+        console.log('ℹ️ 非详情页，跳过双标签磁力链功能');
+    }
+    
+    // 检查Tampermonkey是否正常运行
+    console.log('Tampermonkey GM_xmlhttpRequest 可用:', typeof GM_xmlhttpRequest === 'function');
+    console.log('Tampermonkey GM_getValue 可用:', typeof GM_getValue === 'function');
+
+    // ==================== Cloudflare 安全验证自动处理 ====================
+    (function initCloudflareHandler() {
+        // 检测是否在验证页面
+        const isVerificationPage = document.title.includes('Security Verification') ||
+                                   document.title.includes('Cloudflare') ||
+                                   document.body?.textContent?.includes('Checking...') ||
+                                   document.body?.textContent?.includes('Security Verification') ||
+                                   document.querySelector('div[class*="cf-"]') !== null;
+
+        if (isVerificationPage) {
+            console.log('%c🔒 检测到 Cloudflare 验证页面，等待自动完成...', 'color: orange; font-size: 14px;');
+
+            // 创建全屏遮罩，隐藏验证过程
+            const overlay = document.createElement('div');
+            overlay.id = 'cf-auto-verify-overlay';
+            overlay.style.cssText = `
+                position: fixed;
+                top: 0;
+                left: 0;
+                width: 100vw;
+                height: 100vh;
+                background: #f5f5f5;
+                z-index: 999999;
+                display: flex;
+                flex-direction: column;
+                justify-content: center;
+                align-items: center;
+                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            `;
+            overlay.innerHTML = `
+                <div style="text-align: center; padding: 40px;">
+                    <div style="font-size: 48px; margin-bottom: 20px;">🔒</div>
+                    <div style="font-size: 20px; color: #333; margin-bottom: 10px;">正在进行安全验证</div>
+                    <div style="font-size: 14px; color: #666; margin-bottom: 30px;">请稍候，正在自动完成验证...</div>
+                    <div style="width: 200px; height: 4px; background: #e0e0e0; border-radius: 2px; overflow: hidden;">
+                        <div id="cf-progress-bar" style="width: 0%; height: 100%; background: linear-gradient(90deg, #667eea, #764ba2); transition: width 0.3s;"></div>
+                    </div>
+                    <div id="cf-status-text" style="margin-top: 15px; font-size: 12px; color: #999;">初始化...</div>
+                </div>
+            `;
+            document.body.appendChild(overlay);
+
+            // 进度条动画
+            let progress = 0;
+            const progressBar = document.getElementById('cf-progress-bar');
+            const statusText = document.getElementById('cf-status-text');
+
+            const progressInterval = setInterval(() => {
+                progress += Math.random() * 15;
+                if (progress > 90) progress = 90;
+                if (progressBar) progressBar.style.width = progress + '%';
+
+                if (statusText) {
+                    const messages = ['验证中...', '检查浏览器...', '完成验证...', '即将跳转...'];
+                    const index = Math.floor((progress / 90) * messages.length);
+                    statusText.textContent = messages[Math.min(index, messages.length - 1)];
+                }
+            }, 500);
+
+            // 监听页面跳转（验证完成）
+            let verificationComplete = false;
+
+            const checkVerificationComplete = () => {
+                // 如果页面标题变了，不再是验证页面，说明验证完成
+                const stillVerifying = document.title.includes('Security Verification') ||
+                                      document.title.includes('Cloudflare') ||
+                                      document.body?.textContent?.includes('Checking...');
+
+                if (!stillVerifying && !verificationComplete) {
+                    verificationComplete = true;
+                    clearInterval(progressInterval);
+
+                    if (progressBar) progressBar.style.width = '100%';
+                    if (statusText) statusText.textContent = '验证完成！';
+
+                    // 延迟移除遮罩，让用户看到完成状态
+                    setTimeout(() => {
+                        const overlay = document.getElementById('cf-auto-verify-overlay');
+                        if (overlay) {
+                            overlay.style.opacity = '0';
+                            overlay.style.transition = 'opacity 0.5s';
+                            setTimeout(() => overlay.remove(), 500);
+                        }
+                        console.log('%c✅ Cloudflare 验证完成', 'color: green; font-size: 14px;');
+                    }, 500);
+                }
+            };
+
+            // 每秒检查一次验证状态
+            const checkInterval = setInterval(() => {
+                checkVerificationComplete();
+
+                // 最多检查30秒后自动清除
+                if (verificationComplete) {
+                    clearInterval(checkInterval);
+                }
+            }, 1000);
+
+            // 30秒后强制清除
+            setTimeout(() => {
+                clearInterval(checkInterval);
+                clearInterval(progressInterval);
+                const overlay = document.getElementById('cf-auto-verify-overlay');
+                if (overlay) overlay.remove();
+            }, 30000);
+
+            return; // 验证页面不执行其他功能
+        }
+
+        // 非验证页面，预创建隐藏的 iframe 用于后台验证
+        // 这样当需要验证时可以直接使用，不需要重新加载
+        window.addEventListener('load', () => {
+            // 延迟创建，避免影响页面加载速度
+            setTimeout(() => {
+                const preloadFrame = document.createElement('iframe');
+                preloadFrame.id = 'cf-preload-frame';
+                preloadFrame.style.cssText = 'display: none; width: 0; height: 0; border: none;';
+                preloadFrame.src = 'about:blank';
+                document.body.appendChild(preloadFrame);
+                console.log('%c🔧 Cloudflare 预验证框架已创建', 'color: #667eea; font-size: 12px;');
+            }, 5000);
+        });
+    })();
+
+    // ==================== 请求拦截和自动重试 ====================
+    // 包装 GM_xmlhttpRequest，自动处理验证失败
+    const originalGMRequest = GM_xmlhttpRequest;
+    window.GM_xmlhttpRequest = function(options) {
+        const originalOnload = options.onload;
+        const originalOnerror = options.onerror;
+
+        options.onload = function(response) {
+            // 检测响应是否包含验证页面特征
+            const isVerificationResponse = response.responseText?.includes('Security Verification') ||
+                                          response.responseText?.includes('Checking...') ||
+                                          response.responseText?.includes('cf-browser-verification') ||
+                                          response.responseText?.includes('__cf_chl_jschl_tk__');
+
+            if (isVerificationResponse) {
+                console.log('%c⚠️ 请求遇到 Cloudflare 验证，尝试后台验证...', 'color: orange;');
+
+                // 在后台 iframe 中打开验证页面
+                const verifyFrame = document.createElement('iframe');
+                verifyFrame.style.cssText = 'position: fixed; top: -10000px; left: -10000px; width: 1px; height: 1px; border: none; opacity: 0;';
+                verifyFrame.src = options.url;
+                document.body.appendChild(verifyFrame);
+
+                // 显示验证提示
+                const notify = document.createElement('div');
+                notify.style.cssText = `
+                    position: fixed;
+                    top: 20px;
+                    right: 20px;
+                    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                    color: white;
+                    padding: 15px 20px;
+                    border-radius: 8px;
+                    box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+                    z-index: 999999;
+                    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+                    font-size: 14px;
+                    max-width: 300px;
+                    animation: slideIn 0.3s ease;
+                `;
+                notify.innerHTML = `
+                    <div style="display: flex; align-items: center; gap: 10px;">
+                        <span style="font-size: 20px;">🔒</span>
+                        <div>
+                            <div style="font-weight: 600; margin-bottom: 4px;">正在处理安全验证</div>
+                            <div style="font-size: 12px; opacity: 0.9;">请稍候，自动完成中...</div>
+                        </div>
+                    </div>
+                `;
+                document.body.appendChild(notify);
+
+                // 监听 iframe 加载完成
+                let retryCount = 0;
+                const maxRetries = 30;
+
+                const checkFrame = setInterval(() => {
+                    retryCount++;
+
+                    try {
+                        const frameDoc = verifyFrame.contentDocument || verifyFrame.contentWindow?.document;
+                        if (frameDoc) {
+                            const stillVerifying = frameDoc.title?.includes('Security') ||
+                                                  frameDoc.body?.textContent?.includes('Checking...');
+
+                            if (!stillVerifying) {
+                                // 验证完成
+                                clearInterval(checkFrame);
+                                verifyFrame.remove();
+
+                                notify.innerHTML = `
+                                    <div style="display: flex; align-items: center; gap: 10px;">
+                                        <span style="font-size: 20px;">✅</span>
+                                        <div>
+                                            <div style="font-weight: 600;">验证完成</div>
+                                            <div style="font-size: 12px; opacity: 0.9;">正在重新请求数据...</div>
+                                        </div>
+                                    </div>
+                                `;
+
+                                // 延迟后重试原请求
+                                setTimeout(() => {
+                                    notify.remove();
+                                    originalGMRequest(options);
+                                }, 1000);
+                            }
+                        }
+                    } catch (e) {
+                        // 跨域错误，无法访问 iframe 内容
+                    }
+
+                    if (retryCount >= maxRetries) {
+                        clearInterval(checkFrame);
+                        verifyFrame.remove();
+                        notify.innerHTML = `
+                            <div style="display: flex; align-items: center; gap: 10px;">
+                                <span style="font-size: 20px;">⚠️</span>
+                                <div>
+                                    <div style="font-weight: 600;">验证超时</div>
+                                    <div style="font-size: 12px; opacity: 0.9;">请刷新页面重试</div>
+                                </div>
+                            </div>
+                        `;
+                        setTimeout(() => notify.remove(), 3000);
+
+                        if (originalOnerror) originalOnerror(response);
+                    }
+                }, 1000);
+
+                return;
+            }
+
+            // 正常响应，调用原回调
+            if (originalOnload) originalOnload(response);
+        };
+
+        options.onerror = function(error) {
+            console.error('GM_xmlhttpRequest 错误:', error);
+            if (originalOnerror) originalOnerror(error);
+        };
+
+        return originalGMRequest(options);
+    };
 
     // ========== [新增] 请求限流机制 ==========
     const REQUEST_QUEUE = [];
@@ -1264,18 +1524,404 @@
         container.appendChild(toggleBtn);
     }
 
-    // 添加磁力链切换按钮
+    // 添加磁力链切换按钮（列表页双标签版本）
     function addMagnetToggle(container, itemEl, videoCode) {
         const toggleBtn = document.createElement('span');
         toggleBtn.className = 'magnet-toggle-btn';
         toggleBtn.textContent = '🧲 磁力链'; // 移除角标，纯文字
-                
+
         toggleBtn.onclick = (e) => {
             e.preventDefault(); e.stopPropagation();
-            // 每次点击时实时抓取
-            fetchMagnetLinks(itemEl, videoCode);
+            // 显示双标签弹窗
+            showDualMagnetModalForList(videoCode, itemEl);
         };
         container.appendChild(toggleBtn);
+    }
+
+    // 列表页双标签磁力弹窗
+    function showDualMagnetModalForList(videoCode, itemEl) {
+        // 创建双标签弹窗HTML
+        let html = `
+        <div class="dual-magnet-modal" style="padding: 0;">
+            <!-- 标签切换按钮 -->
+            <div class="dual-magnet-tabs" style="display: flex; margin-bottom: 15px; border-bottom: 2px solid #f0f0f0;">
+                <button id="javdb-tab-btn" class="dual-tab-btn active" style="flex: 1; padding: 12px; border: none; background: #fff; color: #333; font-weight: bold; cursor: pointer; border-bottom: 3px solid #ff6b6b;">
+                    🔥 JAVDB 磁力链
+                    <span id="javdb-count" style="background: #ff6b6b; color: white; padding: 2px 8px; border-radius: 10px; font-size: 12px; margin-left: 5px;">加载中...</span>
+                </button>
+                <button id="javbus-tab-btn" class="dual-tab-btn" style="flex: 1; padding: 12px; border: none; background: #f5f5f5; color: #666; font-weight: bold; cursor: pointer; border-bottom: 3px solid transparent;">
+                    🧲 JAVBUS 磁力链
+                    <span id="javbus-count" style="background: #999; color: white; padding: 2px 8px; border-radius: 10px; font-size: 12px; margin-left: 5px;">加载中...</span>
+                </button>
+            </div>
+
+            <!-- JAVDB 内容区域 -->
+            <div id="javdb-content" class="tab-content" style="display: block;">
+                <div id="javdb-loading" class="preview-loading">正在获取 JAVDB 磁力链...</div>
+                <div id="javdb-magnet-list" class="modal-magnet-list" style="display: none;"></div>
+            </div>
+
+            <!-- JAVBUS 内容区域 -->
+            <div id="javbus-content" class="tab-content" style="display: none;">
+                <div id="javbus-loading" class="preview-loading">正在获取 JAVBUS 磁力链...</div>
+                <div id="javbus-magnet-list" class="modal-magnet-list" style="display: none;"></div>
+            </div>
+        </div>
+        `;
+
+        showModal(`${videoCode} - 磁力链接`, html);
+
+        // 绑定标签切换事件
+        setTimeout(() => {
+            const javdbTabBtn = document.getElementById('javdb-tab-btn');
+            const javbusTabBtn = document.getElementById('javbus-tab-btn');
+            const javdbContent = document.getElementById('javdb-content');
+            const javbusContent = document.getElementById('javbus-content');
+
+            if (javdbTabBtn) {
+                javdbTabBtn.onclick = () => {
+                    javdbTabBtn.style.cssText = 'flex: 1; padding: 12px; border: none; background: #fff; color: #333; font-weight: bold; cursor: pointer; border-bottom: 3px solid #ff6b6b;';
+                    javbusTabBtn.style.cssText = 'flex: 1; padding: 12px; border: none; background: #f5f5f5; color: #666; font-weight: bold; cursor: pointer; border-bottom: 3px solid transparent;';
+                    javdbContent.style.display = 'block';
+                    javbusContent.style.display = 'none';
+                };
+            }
+
+            if (javbusTabBtn) {
+                javbusTabBtn.onclick = () => {
+                    javbusTabBtn.style.cssText = 'flex: 1; padding: 12px; border: none; background: #fff; color: #333; font-weight: bold; cursor: pointer; border-bottom: 3px solid #667eea;';
+                    javdbTabBtn.style.cssText = 'flex: 1; padding: 12px; border: none; background: #f5f5f5; color: #666; font-weight: bold; cursor: pointer; border-bottom: 3px solid transparent;';
+                    javbusContent.style.display = 'block';
+                    javdbContent.style.display = 'none';
+                };
+            }
+
+            // 同时加载 JAVDB 和 JAVBUS 数据
+            loadJavdbMagnetsForList(itemEl, videoCode);
+            loadJavbusMagnetsForList(videoCode);
+        }, 100);
+    }
+
+    // 加载 JAVDB 磁力链（列表页弹窗用）
+    function loadJavdbMagnetsForList(itemEl, videoCode) {
+        const detailLink = itemEl.querySelector('a[href^="/v/"]');
+        const loadingDiv = document.getElementById('javdb-loading');
+        const listDiv = document.getElementById('javdb-magnet-list');
+        const countSpan = document.getElementById('javdb-count');
+
+        if (!detailLink) {
+            if (loadingDiv) loadingDiv.textContent = '无法获取详情页链接';
+            if (countSpan) {
+                countSpan.textContent = '0';
+                countSpan.style.background = '#999';
+            }
+            return;
+        }
+
+        GM_xmlhttpRequest({
+            method: 'GET',
+            url: detailLink.href,
+            timeout: 15000,
+            onload: function(response) {
+                const parser = new DOMParser();
+                const doc = parser.parseFromString(response.responseText, 'text/html');
+                const magnetList = parseMagnetItems(doc);
+
+                if (listDiv) {
+                    if (magnetList.length > 0) {
+                        listDiv.innerHTML = renderMagnetListHTML(magnetList);
+                        listDiv.style.display = 'block';
+                        if (loadingDiv) loadingDiv.style.display = 'none';
+                    } else {
+                        if (loadingDiv) {
+                            loadingDiv.innerHTML = '<div style="text-align: center; padding: 20px; color: #999;">未找到磁力链接</div>';
+                        }
+                    }
+                }
+
+                if (countSpan) {
+                    countSpan.textContent = magnetList.length;
+                    countSpan.style.background = magnetList.length > 0 ? '#ff6b6b' : '#999';
+                }
+            },
+            onerror: function() {
+                if (loadingDiv) {
+                    loadingDiv.innerHTML = '<div style="text-align: center; padding: 20px; color: #e74c3c;">获取失败，请检查网络</div>';
+                }
+                if (countSpan) {
+                    countSpan.textContent = '错误';
+                    countSpan.style.background = '#e74c3c';
+                }
+            },
+            ontimeout: function() {
+                if (loadingDiv) {
+                    loadingDiv.innerHTML = '<div style="text-align: center; padding: 20px; color: #e74c3c;">请求超时</div>';
+                }
+                if (countSpan) {
+                    countSpan.textContent = '超时';
+                    countSpan.style.background = '#e74c3c';
+                }
+            }
+        });
+    }
+
+    // 加载 JAVBUS 磁力链（列表页弹窗用）- 使用详情页相同的逻辑
+    function loadJavbusMagnetsForList(videoCode) {
+        const loadingDiv = document.getElementById('javbus-loading');
+        const listDiv = document.getElementById('javbus-magnet-list');
+        const countSpan = document.getElementById('javbus-count');
+
+        if (listDiv) listDiv.dataset.loaded = 'loading';
+
+        const url = `https://www.javbus.com/${videoCode}`;
+
+        GM_xmlhttpRequest({
+            method: 'GET',
+            url: url,
+            timeout: 20000,
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+                'Referer': 'https://www.javbus.com/',
+                'Cookie': 'existmag=all'
+            },
+            onload: function(response) {
+                try {
+                    const html = response.responseText;
+
+                    if (response.status !== 200) {
+                        if (loadingDiv) {
+                            loadingDiv.innerHTML = `<div style="text-align: center; padding: 20px; color: #e74c3c;">获取失败 (HTTP ${response.status})</div>`;
+                        }
+                        if (countSpan) {
+                            countSpan.textContent = '错误';
+                            countSpan.style.background = '#e74c3c';
+                        }
+                        return;
+                    }
+
+                    // 使用详情页相同的正则提取变量
+                    const gidMatch = html.match(/var\s+gid\s*=\s*(\d+)\s*;/);
+                    const ucMatch = html.match(/var\s+uc\s*=\s*(\d+)\s*;/);
+                    const imgMatch = html.match(/var\s+img\s*=\s*'([^']+)'\s*;/);
+
+                    if (gidMatch && ucMatch && imgMatch) {
+                        const gid = gidMatch[1];
+                        const uc = ucMatch[1];
+                        const img = imgMatch[1];
+
+                        // 调用 API 获取磁力链
+                        const apiUrl = `https://www.javbus.com/ajax/uncledatoolsbyajax.php?gid=${gid}&lang=zh&img=${encodeURIComponent(img)}&uc=${uc}`;
+
+                        GM_xmlhttpRequest({
+                            method: 'GET',
+                            url: apiUrl,
+                            timeout: 15000,
+                            headers: {
+                                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                                'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+                                'Referer': url,
+                                'Cookie': 'existmag=all',
+                                'X-Requested-With': 'XMLHttpRequest'
+                            },
+                            onload: function(apiResponse) {
+                                if (apiResponse.status !== 200) {
+                                    fallbackLoadJavbusFromHTML(html, loadingDiv, listDiv, countSpan);
+                                    return;
+                                }
+
+                                const apiHtml = apiResponse.responseText;
+
+                                // 使用详情页相同的解析方式：用 table 包装
+                                const parser = new DOMParser();
+                                const doc = parser.parseFromString(`<table><tbody>${apiHtml}</tbody></table>`, 'text/html');
+                                const rows = doc.querySelectorAll('tr');
+
+                                const magnetData = [];
+                                rows.forEach(row => {
+                                    const cells = row.querySelectorAll('td');
+                                    if (cells.length >= 3) {
+                                        const nameCell = cells[0];
+                                        const sizeCell = cells[1];
+                                        const dateCell = cells[2];
+
+                                        const nameLink = nameCell.querySelector('a');
+                                        const sizeLink = sizeCell.querySelector('a');
+                                        const dateLink = dateCell.querySelector('a');
+
+                                        if (nameLink && nameLink.href.startsWith('magnet:')) {
+                                            const nameText = nameLink.textContent.trim();
+                                            const sizeText = sizeLink ? sizeLink.textContent.trim() : '';
+                                            const dateText = dateLink ? dateLink.textContent.trim() : '';
+
+                                            // 从 nameCell 的 HTML 中提取标签
+                                            const nameHTML = nameCell.innerHTML;
+                                            const hasHD = nameHTML.includes('高清') || nameText.includes('高清');
+                                            const hasSub = nameHTML.includes('字幕') || nameText.includes('字幕');
+
+                                            magnetData.push({
+                                                name: nameText,
+                                                size: sizeText,
+                                                date: dateText,
+                                                magnetUrl: nameLink.href,
+                                                hasSub: hasSub,
+                                                hasHD: hasHD
+                                            });
+                                        }
+                                    }
+                                });
+
+                                // 排序：有字幕的排在前面
+                                magnetData.sort((a, b) => {
+                                    if (a.hasSub && !b.hasSub) return -1;
+                                    if (!a.hasSub && b.hasSub) return 1;
+                                    return 0;
+                                });
+
+                                if (listDiv) {
+                                    if (magnetData.length > 0) {
+                                        listDiv.innerHTML = renderMagnetListHTML(magnetData);
+                                        listDiv.style.display = 'block';
+                                        listDiv.dataset.loaded = 'true';
+                                        if (loadingDiv) loadingDiv.style.display = 'none';
+                                    } else {
+                                        if (loadingDiv) {
+                                            loadingDiv.innerHTML = '<div style="text-align: center; padding: 20px; color: #999;">未找到磁力链接</div>';
+                                        }
+                                    }
+                                }
+
+                                if (countSpan) {
+                                    countSpan.textContent = magnetData.length;
+                                    countSpan.style.background = magnetData.length > 0 ? '#667eea' : '#999';
+                                }
+                            },
+                            onerror: function() {
+                                fallbackLoadJavbusFromHTML(html, loadingDiv, listDiv, countSpan);
+                            },
+                            ontimeout: function() {
+                                fallbackLoadJavbusFromHTML(html, loadingDiv, listDiv, countSpan);
+                            }
+                        });
+                    } else {
+                        // 尝试直接从 HTML 解析
+                        fallbackLoadJavbusFromHTML(html, loadingDiv, listDiv, countSpan);
+                    }
+                } catch (error) {
+                    console.error('加载 JAVBUS 磁力链失败:', error);
+                    if (loadingDiv) {
+                        loadingDiv.innerHTML = '<div style="text-align: center; padding: 20px; color: #e74c3c;">解析失败</div>';
+                    }
+                }
+            },
+            onerror: function() {
+                if (loadingDiv) {
+                    loadingDiv.innerHTML = '<div style="text-align: center; padding: 20px; color: #e74c3c;">无法连接到 JAVBUS</div>';
+                }
+                if (countSpan) {
+                    countSpan.textContent = '错误';
+                    countSpan.style.background = '#e74c3c';
+                }
+            },
+            ontimeout: function() {
+                if (loadingDiv) {
+                    loadingDiv.innerHTML = '<div style="text-align: center; padding: 20px; color: #e74c3c;">请求超时</div>';
+                }
+                if (countSpan) {
+                    countSpan.textContent = '超时';
+                    countSpan.style.background = '#e74c3c';
+                }
+            }
+        });
+    }
+
+    // 回退：从 HTML 解析 JAVBUS 磁力链
+    function fallbackLoadJavbusFromHTML(html, loadingDiv, listDiv, countSpan) {
+        try {
+            const parser = new DOMParser();
+            const doc = parser.parseFromString(html, 'text/html');
+            const magnetLinks = doc.querySelectorAll('a[href^="magnet:"]');
+
+            const magnetData = [];
+            magnetLinks.forEach((link, index) => {
+                const magnetUrl = link.href;
+                const name = link.textContent.trim() || `磁力链接 ${index + 1}`;
+                const row = link.closest('tr');
+
+                let size = '';
+                let date = '';
+                let hasSub = false;
+                let hasHD = false;
+
+                if (row) {
+                    const tds = row.querySelectorAll('td');
+                    if (tds.length >= 2) size = tds[1]?.textContent.trim() || '';
+                    if (tds.length >= 3) date = tds[2]?.textContent.trim() || '';
+
+                    hasSub = row.textContent.includes('字幕') || row.textContent.includes('Sub');
+                    hasHD = row.textContent.includes('高清') || row.textContent.includes('HD');
+                }
+
+                magnetData.push({ name, magnetUrl, size, date, hasSub, hasHD });
+            });
+
+            magnetData.sort((a, b) => (b.hasSub ? 1 : 0) - (a.hasSub ? 1 : 0));
+
+            if (listDiv) {
+                if (magnetData.length > 0) {
+                    listDiv.innerHTML = renderMagnetListHTML(magnetData);
+                    listDiv.style.display = 'block';
+                    listDiv.dataset.loaded = 'true';
+                    if (loadingDiv) loadingDiv.style.display = 'none';
+                } else {
+                    if (loadingDiv) {
+                        loadingDiv.innerHTML = '<div style="text-align: center; padding: 20px; color: #999;">未找到磁力链接</div>';
+                    }
+                }
+            }
+
+            if (countSpan) {
+                countSpan.textContent = magnetData.length;
+                countSpan.style.background = magnetData.length > 0 ? '#667eea' : '#999';
+            }
+        } catch (error) {
+            console.error('回退解析 JAVBUS 失败:', error);
+            if (loadingDiv) {
+                loadingDiv.innerHTML = '<div style="text-align: center; padding: 20px; color: #e74c3c;">解析失败</div>';
+            }
+        }
+    }
+
+    // 渲染磁力链列表 HTML
+    function renderMagnetListHTML(magnetList) {
+        if (!magnetList || magnetList.length === 0) {
+            return '<div style="text-align: center; padding: 20px; color: #999;">未找到磁力链接</div>';
+        }
+
+        let html = '';
+        magnetList.forEach(m => {
+            let tagsHtml = '';
+            if (m.hasSub) tagsHtml += '<span class="modal-tag is-success" style="background: #2ecc71; color: white; padding: 2px 8px; border-radius: 4px; font-size: 12px; margin-right: 5px;">字幕</span>';
+            if (m.hasHD) tagsHtml += '<span class="modal-tag is-info" style="background: #3498db; color: white; padding: 2px 8px; border-radius: 4px; font-size: 12px; margin-right: 5px;">高清</span>';
+
+            const metaText = [m.size, m.date].filter(Boolean).join(' | ');
+
+            html += `
+                <div class="modal-magnet-item" style="display: flex; justify-content: space-between; align-items: center; padding: 12px; border-bottom: 1px solid #f0f0f0; background: #fafafa; margin-bottom: 8px; border-radius: 6px;">
+                    <div class="modal-magnet-info" style="flex: 1; min-width: 0;">
+                        <div class="modal-magnet-name" title="${m.name}" style="font-weight: 500; margin-bottom: 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${m.name}</div>
+                        <div class="modal-magnet-meta" style="font-size: 12px; color: #666; margin-bottom: 6px;">${metaText}</div>
+                        <div class="modal-magnet-tags">${tagsHtml}</div>
+                    </div>
+                    <div class="modal-magnet-btns" style="margin-left: 10px;">
+                        <button class="modal-btn modal-btn-copy" onclick="const btn=this; navigator.clipboard.writeText('${m.magnetUrl}').then(() => { const old=btn.textContent; btn.textContent='已复制'; btn.style.background='#2e7d32'; setTimeout(()=>{btn.textContent=old; btn.style.background='';}, 1000); })" style="padding: 8px 16px; background: #ff6b6b; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 13px;">复制</button>
+                    </div>
+                </div>`;
+        });
+
+        return html;
     }
     
     // 检查磁力链是否可用
@@ -1525,9 +2171,9 @@
                 
                         // 提取有效标签（严格过滤）
                         let tags = [];
+                        // 方法1：查找.tag类的元素（JavDB格式）
                         item.querySelectorAll('.tag').forEach(tag => {
                             const text = tag.textContent.trim();
-                            // 白名单机制：只保留真正的资源属性标签
                             const validTags = ['字幕', '高清', '无码', '有码', '中文', '无修正'];
                             if (validTags.some(v => text.includes(v)) && !meta.includes(text)) {
                                 let className = 'modal-tag';
@@ -1538,6 +2184,18 @@
                                 tags.push({ text, className });
                             }
                         });
+                        
+                        // 方法2：查找有title属性包含"包含"或"磁力"的元素（JavBus格式）
+                        if (tags.length === 0) {
+                            item.querySelectorAll('[title*="包含"], [title*="磁力"]').forEach(tag => {
+                                const text = tag.textContent.trim();
+                                const validTags = ['字幕', '高清', '无码', '有码', '中文', '无修正'];
+                                if (validTags.some(v => text.includes(v)) && !meta.includes(text)) {
+                                    let className = 'modal-tag is-primary'; // JavBus标签使用绿色
+                                    tags.push({ text, className });
+                                }
+                            });
+                        }
                                         
                         magnetList.push({
                             name,
@@ -1954,19 +2612,88 @@
                     
                     if (val) {
                         foundCode = true;
-                        const existingStatus = val.parentElement.querySelector('.emby-status');
+                        // 强制清理所有旧指示器
+                        const allOldStatuses = document.querySelectorAll('.emby-status');
+                        allOldStatuses.forEach(el => {
+                            console.log('EMBY Checker: 移除旧状态指示器:', el.textContent, el.parentElement?.className);
+                            el.remove();
+                        });
+                        
+                        const existingStatus = block.querySelector('.emby-status');
                         // 稳定性逻辑：只有在没有标签，或者全局同步错误发生变化时才重绘
                         if (existingStatus) {
                             console.log('EMBY Checker: EMBY标签已存在');
                             if (SYNC_ERROR && existingStatus.textContent !== SYNC_ERROR) {
-                                // 将 EMBY 标签插入到番号所在的 panel-block 之前
-                                addStatusIndicator(block.parentElement, val.textContent.trim(), null, block);
+                                // 更新指示器文本和样式
+                                existingStatus.textContent = SYNC_ERROR;
+                                existingStatus.className = 'emby-status error';
+                                existingStatus.title = '点击打开服务器设置';
+                                existingStatus.style.cursor = 'pointer';
                             }
                             // 如果已经有标签了，且没有全局错误需要显示，则跳过，交给 verifyStatusBackground 处理后续更新
                         } else {
                             console.log('EMBY Checker: 未找到现有EMBY标签，开始添加');
-                            // 将 EMBY 标签插入到番号所在的 panel-block 之前
-                            addStatusIndicator(block.parentElement, val.textContent.trim(), null, block);
+                            const copyBtn = block.querySelector('.copy-to-clipboard');
+                            const statusDiv = document.createElement('span');
+                            statusDiv.style.marginLeft = '4px';
+                            // 确定状态
+                            const servers = getServers();
+                            if (servers.length === 0) {
+                                statusDiv.className = 'emby-status not-added';
+                                statusDiv.textContent = '未添加服务器';
+                                statusDiv.title = '点击打开服务器设置';
+                                statusDiv.style.cursor = 'pointer';
+                                statusDiv.onclick = (e) => {
+                                    e.preventDefault(); e.stopPropagation();
+                                    showSettingsDialog();
+                                };
+                            } else if (SYNC_ERROR) {
+                                statusDiv.className = 'emby-status error';
+                                statusDiv.textContent = SYNC_ERROR;
+                                statusDiv.title = '点击打开服务器设置';
+                                statusDiv.style.cursor = 'pointer';
+                                statusDiv.onclick = (e) => {
+                                    e.preventDefault(); e.stopPropagation();
+                                    showSettingsDialog();
+                                };
+                            } else if (Object.keys(LIBRARY_INDEX).length === 0 && LAST_SYNC_TIME === 0) {
+                                statusDiv.className = 'emby-status error';
+                                statusDiv.textContent = '请点击设置并同步服务器';
+                                statusDiv.title = '点击打开服务器设置';
+                                statusDiv.style.cursor = 'pointer';
+                                statusDiv.onclick = (e) => {
+                                    e.preventDefault(); e.stopPropagation();
+                                    showSettingsDialog();
+                                };
+                            } else {
+                                const videoCode = val.textContent.trim();
+                                const info = LIBRARY_INDEX[videoCode.toUpperCase()];
+                                if (info) {
+                                    statusDiv.className = 'emby-status exists';
+                                    statusDiv.textContent = 'Emby已入库';
+                                    statusDiv.title = `点击打开EMBY\n服务器: ${info.serverName}`;
+                                    statusDiv.onclick = (e) => {
+                                        e.preventDefault(); e.stopPropagation();
+                                        const servers = getServers();
+                                        const currentServer = servers.find(s => s.name === info.serverName) || { url: info.serverUrl };
+                                        const finalUrl = currentServer.url || info.serverUrl;
+                                        const url = `${finalUrl}/web/index.html#!/item?id=${info.itemId}&serverId=${info.serverId}`;
+                                        window.open(url, '_blank');
+                                    };
+                                } else {
+                                    statusDiv.className = 'emby-status not-exists';
+                                    statusDiv.textContent = 'Emby未入库';
+                                    statusDiv.title = '未在服务器中找到';
+                                    statusDiv.onclick = null;
+                                }
+                            }
+                            
+                            if (copyBtn) {
+                                copyBtn.after(statusDiv);
+                            } else {
+                                block.appendChild(statusDiv);
+                            }
+                            console.log('EMBY Checker: EMBY标签已添加');
                         }
                     }
                     break;
@@ -2065,9 +2792,9 @@
     // ========== [新增] 多站点搜索功能 ==========
     const SEARCH_SITES = [
         { name: '98堂', url: 'https://sehuatang.net/search.php?mod=forum&srchtxt={code}', format: 'query' },
-        { name: 'BTSOW', url: 'https://btsow.lol/search/{code}', format: 'path' },
+        { name: 'BTSOW', url: 'https://btsow.pics/search/{code}', format: 'path' },
         { name: 'JAVDB', url: 'https://javdb.com/search?q={code}', format: 'query' },
-        { name: 'JAVBUS', url: 'https://www.javbus.com/search/{code}', format: 'path' },
+        { name: 'JAVBUS', url: 'https://www.javbus.com/{code}', format: 'path' },
         { name: '谷歌搜索', url: 'https://www.google.com/search?q={code}', format: 'query' }
     ];
 
@@ -2123,7 +2850,7 @@
                 while (node = walker.nextNode()) {
                     const text = node.textContent.trim();
                     // 核心改进：支持中英文两种冒号 [:：]，并放宽番号匹配范围
-                    const match = text.match(/番[号號][:：][[［\s]*([A-Z0-9\-]+)/i);
+                            const match = text.match(/番[号號][:：]\s*([A-Z0-9\-]+)/i);
                     if (match) {
                         videoCode = match[1];
                         codeElement = node.parentElement;
@@ -2143,7 +2870,7 @@
                         for (let el of elements) {
                             const text = el.textContent || '';
                             // 核心改进：支持中英文两种冒号 [:：]，并放宽番号匹配范围
-                            const match = text.match(/番[号號][:：][[［\s]*([A-Z0-9\-]+)/i);
+                            const match = text.match(/番[号號][:：]\s*([A-Z0-9\-]+)/i);
                             if (match && text.length < 300) {
                                 videoCode = match[1];
                                 codeElement = el;
@@ -2190,6 +2917,7 @@
                 }
             }
     
+            videoCode = videoCode.replace(/[^\w\-]/g, '').trim();
             console.log('EMBY Checker: 找到番号:', videoCode);
             
             // 如果通过标题/URL提取到了番号，但codeElement为空，则使用更激进的策略重新在页面上查找
@@ -2248,6 +2976,7 @@
             btn.addEventListener('click', (e) => {
                 e.preventDefault();
                 const url = site.format === 'path' ? site.url.replace('{code}', videoCode) : site.url.replace('{code}', encodeURIComponent(videoCode));
+                console.log('JAVBUS按钮点击:', site.name, '视频代码:', videoCode, 'URL:', url);
                 window.open(url, '_blank');
             });
             searchPanel.appendChild(btn);
@@ -2446,5 +3175,1168 @@
             initCheck();
         }
     }, 1000); // 每秒检查一次配置是否变更
+
+    // ==================== 双标签磁力链功能 ====================
+    function addDualTabsForMagnets() {
+        console.log('EMBY Checker: addDualTabsForMagnets()函数被调用');
+        console.log('EMBY Checker: 当前URL:', window.location.href);
+        console.log('EMBY Checker: 当前路径:', window.location.pathname);
+        try {
+            // 只在详情页显示
+            if (!window.location.pathname.startsWith('/v/')) {
+                console.log('EMBY Checker: 不是详情页，跳过添加双标签磁力链');
+                return;
+            }
+            
+            // 防止重复添加
+            if (document.querySelector('.javdb-dual-magnet-tabs')) {
+                console.log('EMBY Checker: 双标签磁力链已存在');
+                return;
+            }
+            
+            console.log('EMBY Checker: 开始添加双标签磁力链');
+            
+            // 提取当前番号
+            let videoCode = '';
+            const codeMatch = document.body.textContent.match(/番[号號][:：]\s*([A-Z0-9\-]+)/i);
+            if (codeMatch) {
+                videoCode = codeMatch[1].trim();
+            }
+            if (!videoCode) {
+                console.log('EMBY Checker: 无法提取番号，跳过磁力链双标签');
+                return;
+            }
+            console.log('EMBY Checker: 双标签磁力链，番号:', videoCode);
+            
+            // 查找磁力链区域的容器
+            // JAVDB页面通常有一个标签页区域，包含"磁链"、"短评"、"相关清单"
+            // 我们需要找到当前激活的磁力链内容区域
+            const magnetTabContent = document.querySelector('#magnets') || 
+                                    document.querySelector('[id*="magnet"]') ||
+                                    document.querySelector('.magnet-list');
+            
+            if (!magnetTabContent) {
+                console.log('EMBY Checker: 未找到磁力链容器');
+                return;
+            }
+            
+            // 创建双标签界面（现代化设计）
+            const dualTabsContainer = document.createElement('div');
+            dualTabsContainer.className = 'javdb-dual-magnet-tabs';
+            dualTabsContainer.style.cssText = `
+                margin: 15px 0 10px 0;
+                display: flex;
+                gap: 8px;
+                background: transparent;
+                padding: 0;
+            `;
+            
+            // JAVDB标签按钮
+            const javdbTab = document.createElement('button');
+            javdbTab.className = 'javdb-tab active';
+            javdbTab.innerHTML = `🔥 JAVDB 磁力链 <span id="javdb-magnet-badge" style="
+                position: absolute;
+                top: -6px;
+                right: -8px;
+                background: #FF9800;
+                color: white;
+                border-radius: 50%;
+                width: 20px;
+                height: 20px;
+                display: none;
+                align-items: center;
+                justify-content: center;
+                font-size: 11px;
+                font-weight: bold;
+                box-shadow: 0 1px 3px rgba(0,0,0,0.3);
+                z-index: 10;
+            "></span>`;
+            javdbTab.style.cssText = `
+                padding: 6px 12px;
+                border: none;
+                background: white;
+                color: #667eea;
+                cursor: pointer;
+                font-weight: 700;
+                font-size: 13px;
+                text-align: center;
+                border-radius: 6px;
+                transition: all 0.3s ease;
+                margin: 0;
+                box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+                position: relative;
+                overflow: visible;
+            `;
+            
+            // 添加微妙的内阴影效果
+            javdbTab.style.boxShadow = '0 2px 8px rgba(0,0,0,0.1), inset 0 1px 0 rgba(255,255,255,0.8)';
+            
+            javdbTab.onclick = function() {
+                showJAVDBMagnets();
+                javdbTab.style.background = 'white';
+                javdbTab.style.color = '#667eea';
+                javdbTab.style.boxShadow = '0 4px 12px rgba(102, 126, 234, 0.2)';
+                javbusTab.style.background = 'white';
+                javbusTab.style.color = '#999';
+                javbusTab.style.boxShadow = '0 2px 8px rgba(0,0,0,0.1)';
+                
+                // 取消超时检查
+                if (javdbLoadTimeout) {
+                    clearTimeout(javdbLoadTimeout);
+                    javdbLoadTimeout = null;
+                }
+            };
+            
+            // JAVBUS标签按钮
+            const javbusTab = document.createElement('button');
+            javbusTab.className = 'javdb-tab';
+            javbusTab.innerHTML = `🧲 JAVBUS 磁力链 <span id="javbus-magnet-badge" style="
+                position: absolute;
+                top: -6px;
+                right: -8px;
+                background: #4CAF50;
+                color: white;
+                border-radius: 50%;
+                width: 20px;
+                height: 20px;
+                display: none;
+                align-items: center;
+                justify-content: center;
+                font-size: 11px;
+                font-weight: bold;
+                box-shadow: 0 1px 3px rgba(0,0,0,0.3);
+                z-index: 10;
+            "></span>`;
+            javbusTab.style.cssText = `
+                padding: 6px 12px;
+                border: none;
+                background: white;
+                color: #999;
+                cursor: pointer;
+                font-weight: 600;
+                font-size: 13px;
+                text-align: center;
+                border-radius: 6px;
+                transition: all 0.3s ease;
+                margin: 0;
+                box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+                position: relative;
+                overflow: visible;
+            `;
+            
+            javbusTab.onclick = function() {
+                showJAVBUSMagnets(videoCode);
+                javbusTab.style.background = 'white';
+                javbusTab.style.color = '#667eea';
+                javbusTab.style.boxShadow = '0 4px 12px rgba(102, 126, 234, 0.2)';
+                javdbTab.style.background = 'white';
+                javdbTab.style.color = '#999';
+                javdbTab.style.boxShadow = '0 2px 8px rgba(0,0,0,0.1)';
+            };
+            
+            // 添加悬停效果
+            [javdbTab, javbusTab].forEach(tab => {
+                tab.addEventListener('mouseenter', function() {
+                    this.style.transform = 'translateY(-2px)';
+                    this.style.boxShadow = '0 6px 16px rgba(0,0,0,0.2)';
+                });
+                
+                tab.addEventListener('mouseleave', function() {
+                    this.style.transform = 'translateY(0)';
+                    if (this.classList.contains('active')) {
+                        this.style.boxShadow = '0 4px 12px rgba(102, 126, 234, 0.2)';
+                    } else {
+                        this.style.boxShadow = '0 2px 6px rgba(0,0,0,0.08)';
+                    }
+                });
+            });
+            
+            dualTabsContainer.appendChild(javdbTab);
+            dualTabsContainer.appendChild(javbusTab);
+            
+            // 插入到磁力链区域前面
+            magnetTabContent.parentNode.insertBefore(dualTabsContainer, magnetTabContent);
+            
+            // 创建JAVBUS磁力链容器（初始隐藏）
+            const javbusMagnetsContainer = document.createElement('div');
+            javbusMagnetsContainer.id = 'javbus-magnet-container';
+            javbusMagnetsContainer.style.display = 'none';
+            magnetTabContent.parentNode.insertBefore(javbusMagnetsContainer, magnetTabContent.nextSibling);
+            
+            // 添加手动加载按钮（如果自动加载失败）
+            const manualLoadBtn = document.createElement('button');
+            manualLoadBtn.textContent = '🔄 手动加载JAVBUS磁力链';
+            manualLoadBtn.style.cssText = `
+                margin-top: 10px;
+                padding: 8px 16px;
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                color: white;
+                border: none;
+                border-radius: 4px;
+                cursor: pointer;
+                font-size: 12px;
+                font-weight: 500;
+                transition: all 0.2s;
+                box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            `;
+            manualLoadBtn.addEventListener('mouseenter', function() {
+                this.style.transform = 'translateY(-1px)';
+                this.style.boxShadow = '0 4px 12px rgba(0,0,0,0.15)';
+            });
+            manualLoadBtn.addEventListener('mouseleave', function() {
+                this.style.transform = 'translateY(0)';
+                this.style.boxShadow = '0 2px 8px rgba(0,0,0,0.1)';
+            });
+            manualLoadBtn.addEventListener('click', function() {
+                console.log('EMBY Checker: 用户手动触发JAVBUS磁力链加载');
+                javbusMagnetsContainer.innerHTML = '<p>正在从JAVBUS加载磁力链...</p>';
+                javbusMagnetsContainer.style.display = 'block';
+                fetchJAVBUSMagnets(videoCode, javbusMagnetsContainer);
+                // 隐藏按钮
+                this.style.display = 'none';
+            });
+            
+            // 将按钮添加到容器旁边
+            javbusMagnetsContainer.parentNode.insertBefore(manualLoadBtn, javbusMagnetsContainer.nextSibling);
+            
+            // 自动预加载JAVBUS磁力链数据（改进版）
+            let retryCount = 0;
+            const maxRetries = 3;
+            
+            function autoLoadJAVBUS() {
+                console.log('EMBY Checker: autoLoadJAVBUS()函数被调用');
+                console.log('EMBY Checker: 当前加载状态:', javbusMagnetsContainer.dataset.loaded);
+                console.log('EMBY Checker: 重试次数:', retryCount, '最大重试次数:', maxRetries);
+                console.log('EMBY Checker: 容器是否存在:', !!javbusMagnetsContainer);
+                console.log('EMBY Checker: 容器是否在DOM中:', document.body.contains(javbusMagnetsContainer));
+                
+                if (javbusMagnetsContainer.dataset.loaded === 'true') {
+                    console.log('EMBY Checker: JAVBUS磁力链数据已加载');
+                    return;
+                }
+                
+                if (retryCount >= maxRetries) {
+                    console.log('EMBY Checker: 自动加载JAVBUS磁力链失败，已达最大重试次数');
+                    javbusMagnetsContainer.innerHTML = `
+                        <div style="text-align: center; padding: 20px; color: #666; background: #f8f9fa; border-radius: 4px;">
+                            <p style="font-weight: bold; margin-bottom: 10px;">JAVBUS磁力链自动加载失败</p>
+                            <p style="font-size: 12px; margin-bottom: 10px;">可能的原因：</p>
+                            <ul style="text-align: left; font-size: 12px; margin-bottom: 10px;">
+                                <li>网络连接问题</li>
+                                <li>JAVBUS网站需要登录</li>
+                                <li>网站结构已改变</li>
+                                <li>数据动态加载，需要JavaScript执行</li>
+                            </ul>
+                            <p style="font-size: 12px;">请尝试点击下方按钮手动加载</p>
+                        </div>
+                    `;
+                    javbusMagnetsContainer.dataset.loaded = 'error';
+                    
+                    // 显示手动加载按钮
+                    if (manualLoadBtn) {
+                        manualLoadBtn.style.display = 'block';
+                    }
+                    return;
+                }
+                
+                console.log(`EMBY Checker: 自动预加载JAVBUS磁力链数据（第${retryCount + 1}次尝试）`);
+                console.log('EMBY Checker: 番号:', videoCode);
+                console.log('EMBY Checker: 目标容器:', javbusMagnetsContainer.id);
+                
+                // 显示加载状态
+                javbusMagnetsContainer.innerHTML = `
+                    <div style="text-align: center; padding: 20px; color: #666;">
+                        <p>正在从JAVBUS加载磁力链...</p>
+                        <p style="font-size: 12px; color: #999;">尝试 ${retryCount + 1}/${maxRetries}，请稍候</p>
+                    </div>
+                `;
+                
+                retryCount++;
+                fetchJAVBUSMagnets(videoCode, javbusMagnetsContainer);
+            }
+            
+            // 首次加载：延迟2秒确保页面完全加载
+            console.log('EMBY Checker: 设置自动预加载，2秒后执行');
+            setTimeout(autoLoadJAVBUS, 2000);
+            
+            // 设置加载状态为false
+            javbusMagnetsContainer.dataset.loaded = 'false';
+            
+            // 如果失败，2秒后重试
+            const retryInterval = setInterval(() => {
+                console.log('EMBY Checker: 重试检查，当前状态:', javbusMagnetsContainer.dataset.loaded, '重试次数:', retryCount);
+                if (javbusMagnetsContainer.dataset.loaded !== 'true' && javbusMagnetsContainer.dataset.loaded !== 'error' && retryCount < maxRetries) {
+                    console.log('EMBY Checker: 检测到加载失败，准备重试...');
+                    setTimeout(autoLoadJAVBUS, 1000);
+                } else {
+                    console.log('EMBY Checker: 停止重试检查');
+                    clearInterval(retryInterval);
+                }
+            }, 3000); // 每3秒检查一次
+            
+            // 显示JAVDB磁力链（默认）
+            function showJAVDBMagnets() {
+                magnetTabContent.style.display = 'block';
+                javbusMagnetsContainer.style.display = 'none';
+            }
+            
+            // 检查JAVDB磁力链是否加载超时
+            let javdbLoadTimeout = null;
+            function checkJAVDBLoadTimeout() {
+                if (magnetTabContent.textContent.includes('搜寻中')) {
+                    console.log('EMBY Checker: JAVDB磁力链加载超时，自动切换到JAVBUS');
+                    // 自动切换到JAVBUS标签
+                    javbusTab.click();
+                }
+            }
+            
+            // 设置10秒后检查JAVDB磁力链是否加载超时
+            javdbLoadTimeout = setTimeout(checkJAVDBLoadTimeout, 10000);
+            console.log('EMBY Checker: 设置JAVDB磁力链加载超时检查（10秒后）');
+            
+            // 显示JAVBUS磁力链
+            function showJAVBUSMagnets(code) {
+                console.log('EMBY Checker: showJAVBUSMagnets()函数被调用，番号:', code);
+                magnetTabContent.style.display = 'none';
+                javbusMagnetsContainer.style.display = 'block';
+                
+                // 如果已经加载过，直接显示
+                if (javbusMagnetsContainer.dataset.loaded === 'true') {
+                    console.log('EMBY Checker: JAVBUS磁力链数据已加载，直接显示');
+                    return;
+                }
+                
+                console.log('EMBY Checker: JAVBUS磁力链数据未加载，开始加载');
+                // 显示加载中
+                javbusMagnetsContainer.innerHTML = '<p>正在从JAVBUS加载磁力链...</p>';
+                
+                // 获取JAVBUS磁力链
+                fetchJAVBUSMagnets(code, javbusMagnetsContainer);
+            }
+            
+            // 更新JAVDB磁力链角标
+            function updateJAVDBMagnetBadge() {
+                const badge = document.getElementById('javdb-magnet-badge');
+                if (!badge) return;
+                // 计算原始磁力链数量
+                const magnetLinks = magnetTabContent.querySelectorAll('a[href^="magnet:"]');
+                const count = magnetLinks.length;
+                if (count > 0) {
+                    badge.textContent = count;
+                    badge.style.display = 'flex';
+                } else {
+                    badge.style.display = 'none';
+                }
+            }
+            // 延迟更新，等待页面动态加载
+            setTimeout(updateJAVDBMagnetBadge, 1000);
+            // 监听磁力链区域变化
+            const observer = new MutationObserver(updateJAVDBMagnetBadge);
+            observer.observe(magnetTabContent, { childList: true, subtree: true });
+            
+            console.log('EMBY Checker: 双标签磁力链已添加');
+            
+        } catch (error) {
+            console.error('EMBY Checker: 添加双标签磁力链失败:', error);
+        }
+    }
+    
+    // 从<script>标签中提取磁力链数据
+    function extractMagnetDataFromScripts(htmlDoc) {
+        const scripts = htmlDoc.querySelectorAll('script');
+        console.log('EMBY Checker: 检查脚本数量:', scripts.length);
+        let magnetData = [];
+        
+        for (let script of scripts) {
+            const scriptContent = script.textContent || script.innerText;
+            
+            // 尝试多种常见数据格式（JAVBUS特有模式）
+            const patterns = [
+                /var\s+magnets\s*=\s*(\[[\s\S]*?\]);/,  // var magnets = [...];
+                /window\.__INITIAL_STATE__\s*=\s*({[\s\S]*?});/,  // window.__INITIAL_STATE__ = {...};
+                /magnets:\s*(\[[\s\S]*?\])/,  // magnets: [...]
+                /"magnets"\s*:\s*(\[[\s\S]*?\])/,  // "magnets": [...]
+                /magnetList:\s*(\[[\s\S]*?\])/,  // magnetList: [...]
+                /"magnetList"\s*:\s*(\[[\s\S]*?\])/,   // "magnetList": [...]
+                /var\s+data\s*=\s*({[\s\S]*?});\s*\/\/\s*JAVBUS/,  // var data = {...}; // JAVBUS
+                /data\s*=\s*({[\s\S]*?});\s*console\.log/,  // data = {...}; console.log
+                /var\s+movie\s*=\s*({[\s\S]*?});/,  // var movie = {...};
+                /"magnet_links"\s*:\s*(\[[\s\S]*?\])/,  // "magnet_links": [...]
+                /magnet_links:\s*(\[[\s\S]*?\])/,  // magnet_links: [...]
+                /"torrents"\s*:\s*(\[[\s\S]*?\])/,  // "torrents": [...]
+                /torrents:\s*(\[[\s\S]*?\])/  // torrents: [...]
+            ];
+            
+            for (let pattern of patterns) {
+                const match = scriptContent.match(pattern);
+                if (match) {
+                    try {
+                        let dataStr = match[1];
+                        // 如果是对象，尝试从中提取磁力链数组
+                        if (dataStr.startsWith('{')) {
+                            const dataObj = JSON.parse(dataStr);
+                            // 尝试从对象中找到磁力链数组
+                            if (dataObj.magnets) magnetData = dataObj.magnets;
+                            else if (dataObj.magnetList) magnetData = dataObj.magnetList;
+                            else if (dataObj.magnet_links) magnetData = dataObj.magnet_links;
+                            else if (dataObj.torrents) magnetData = dataObj.torrents;
+                            else if (dataObj.data && Array.isArray(dataObj.data)) magnetData = dataObj.data;
+                        } else {
+                            // 直接是数组
+                            magnetData = JSON.parse(dataStr);
+                        }
+                        
+                        if (Array.isArray(magnetData) && magnetData.length > 0) {
+                            console.log('EMBY Checker: 从脚本中找到磁力链数据，模式:', pattern.toString());
+                            // 标准化数据格式
+                            return magnetData.map(item => ({
+                                name: item.name || item.title || item.text || item.magnet_name || '未知',
+                                size: item.size || item.fileSize || item.file_size || item.size_text || '未知',
+                                date: item.date || item.time || item.timestamp || item.date_added || '未知',
+                                magnetUrl: item.magnetUrl || item.magnet || item.magnet_url || item.url || '',
+                                hasSub: item.hasSub || item.has_subtitle || false
+                            }));
+                        }
+                    } catch (e) {
+                        // JSON解析失败，尝试下一个模式
+                        console.log('EMBY Checker: 解析失败，尝试下一个模式');
+                    }
+                }
+            }
+        }
+        
+        return magnetData;
+    }
+    
+    // 直接从HTML中提取磁力链接（备用方法）
+    function extractMagnetsFromHTML(htmlDoc) {
+        console.log('EMBY Checker: 尝试直接从HTML中提取磁力链接');
+        const magnetLinks = [];
+        
+        // 查找所有包含magnet:的链接
+        const allLinks = htmlDoc.querySelectorAll('a[href^="magnet:"]');
+        console.log('EMBY Checker: 找到', allLinks.length, '个磁力链接');
+        
+        if (allLinks.length === 0) {
+            console.log('EMBY Checker: 未找到任何磁力链接，可能数据是动态加载的');
+            // 尝试查找可能包含磁力链接的元素
+            const possibleContainers = [
+                htmlDoc.querySelector('.magnet-list'),
+                htmlDoc.querySelector('#magnets'),
+                htmlDoc.querySelector('.torrent-list'),
+                htmlDoc.querySelector('[class*="magnet"]'),
+                htmlDoc.querySelector('[id*="magnet"]')
+            ];
+            
+            for (let container of possibleContainers) {
+                if (container) {
+                    console.log('EMBY Checker: 找到可能的磁力链容器:', container.className, '内容长度:', container.innerHTML.length);
+                    // 尝试在容器内查找磁力链接
+                    const containerLinks = container.querySelectorAll('a[href^="magnet:"]');
+                    console.log('EMBY Checker: 容器内找到', containerLinks.length, '个磁力链接');
+                }
+            }
+        }
+        
+        allLinks.forEach((link, index) => {
+            const magnetUrl = link.href;
+            let name = link.textContent.trim() || link.title || '磁力链接 ' + (index + 1);
+            
+            console.log(`EMBY Checker: 磁力链接 ${index + 1}:`, name.substring(0, 50) + '...');
+            
+            // 尝试从父元素或兄弟元素中提取更多信息
+            let size = '未知';
+            let date = '未知';
+            
+            // 查找父元素或相邻元素中的元数据
+            let parent = link.parentElement;
+            if (parent) {
+                const parentText = parent.textContent;
+                
+                // 尝试提取大小（如 "1.5GB", "500MB"）
+                const sizeMatch = parentText.match(/(\d+\.?\d*\s*[GMK]B)/i);
+                if (sizeMatch) size = sizeMatch[1];
+                
+                // 尝试提取日期（如 "2024-01-15", "2024/01/15"）
+                const dateMatch = parentText.match(/(\d{4}[-/]\d{2}[-/]\d{2})/);
+                if (dateMatch) date = dateMatch[1];
+            }
+            
+            magnetLinks.push({
+                name: name,
+                size: size,
+                date: date,
+                magnetUrl: magnetUrl,
+                hasSub: false // 无法从HTML直接判断是否有字幕
+            });
+        });
+        
+        console.log('EMBY Checker: 从HTML提取完成，共', magnetLinks.length, '个磁力链接');
+        return magnetLinks;
+    }
+    
+    // 渲染磁力链数据到容器
+    function renderMagnetData(data, container) {
+        if (!data || data.length === 0) {
+            container.innerHTML = `
+                <div style="text-align: center; padding: 20px; color: #666; background: #f8f9fa; border-radius: 4px;">
+                    <p>没有找到磁力链数据</p>
+                    <p style="font-size: 12px; color: #999;">可能需要登录JAVBUS查看</p>
+                </div>
+            `;
+            return;
+        }
+        
+        // 创建现代化表格
+        const table = document.createElement('table');
+        table.style.cssText = `
+            width: 100%;
+            border-collapse: separate;
+            border-spacing: 0;
+            border-radius: 8px;
+            overflow: hidden;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            font-size: 14px;
+        `;
+        
+        // 表头
+        const thead = document.createElement('thead');
+        thead.style.cssText = `
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        `;
+        const headerRow = document.createElement('tr');
+        const headers = ['磁力名稱', '檔案大小', '分享日期', '操作'];
+        headers.forEach(headerText => {
+            const th = document.createElement('th');
+            th.textContent = headerText;
+            th.style.cssText = `
+                padding: 12px 15px;
+                text-align: left;
+                font-weight: 600;
+                border-bottom: 1px solid rgba(255,255,255,0.1);
+            `;
+            headerRow.appendChild(th);
+        });
+        thead.appendChild(headerRow);
+        table.appendChild(thead);
+        
+        // 表体
+        const tbody = document.createElement('tbody');
+        data.forEach((magnet, index) => {
+            const row = document.createElement('tr');
+            row.style.cssText = `
+                transition: background-color 0.2s;
+                background-color: ${index % 2 === 0 ? '#ffffff' : '#f8f9fa'};
+            `;
+            
+            // 悬停效果
+            row.addEventListener('mouseenter', function() {
+                this.style.backgroundColor = '#f0f4ff';
+            });
+            row.addEventListener('mouseleave', function() {
+                this.style.backgroundColor = index % 2 === 0 ? '#ffffff' : '#f8f9fa';
+            });
+            
+            // 名称和标签
+            const nameCell = document.createElement('td');
+            nameCell.style.cssText = `
+                padding: 12px 15px;
+                border-bottom: 1px solid #e9ecef;
+                max-width: 400px;
+                overflow: hidden;
+                text-overflow: ellipsis;
+                white-space: nowrap;
+                font-weight: 500;
+            `;
+            const nameSpan = document.createElement('span');
+            nameSpan.textContent = magnet.name || magnet.title || magnet.text || '未知';
+            nameSpan.style.marginRight = '6px';
+            nameCell.appendChild(nameSpan);
+            
+            // 添加标签
+            if (magnet.hasHD) {
+                const hdTag = document.createElement('span');
+                hdTag.textContent = '高清';
+                hdTag.style.cssText = `
+                    background: #4CAF50;
+                    color: white;
+                    padding: 3px 10px;
+                    border-radius: 6px;
+                    font-size: 12px;
+                    font-weight: 600;
+                    margin-right: 6px;
+                    display: inline-block;
+                    vertical-align: middle;
+                    border: 1px solid #388E3C;
+                    box-shadow: 0 2px 4px rgba(0,0,0,0.15);
+                `;
+                nameCell.appendChild(hdTag);
+            }
+            if (magnet.hasSub) {
+                const subTag = document.createElement('span');
+                subTag.textContent = '字幕';
+                subTag.style.cssText = `
+                    background: #2196F3;
+                    color: white;
+                    padding: 3px 10px;
+                    border-radius: 6px;
+                    font-size: 12px;
+                    font-weight: 600;
+                    display: inline-block;
+                    vertical-align: middle;
+                    border: 1px solid #1976D2;
+                    box-shadow: 0 2px 4px rgba(0,0,0,0.15);
+                `;
+                nameCell.appendChild(subTag);
+            }
+            row.appendChild(nameCell);
+            
+            // 大小
+            const sizeCell = document.createElement('td');
+            sizeCell.textContent = magnet.size || magnet.fileSize || '未知';
+            sizeCell.style.cssText = `
+                padding: 12px 15px;
+                border-bottom: 1px solid #e9ecef;
+                color: #666;
+            `;
+            row.appendChild(sizeCell);
+            
+            // 日期
+            const dateCell = document.createElement('td');
+            dateCell.textContent = magnet.date || magnet.time || magnet.timestamp || '未知';
+            dateCell.style.cssText = `
+                padding: 12px 15px;
+                border-bottom: 1px solid #e9ecef;
+                color: #666;
+            `;
+            row.appendChild(dateCell);
+            
+            // 操作按钮
+            const actionCell = document.createElement('td');
+            actionCell.style.cssText = `
+                padding: 12px 15px;
+                border-bottom: 1px solid #e9ecef;
+                text-align: center;
+            `;
+            
+            // 复制按钮
+            const copyBtn = document.createElement('button');
+            copyBtn.textContent = '📋 复制';
+            copyBtn.style.cssText = `
+                padding: 6px 12px;
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                color: white;
+                border: none;
+                border-radius: 4px;
+                cursor: pointer;
+                font-size: 12px;
+                font-weight: 500;
+                transition: all 0.2s;
+            `;
+            copyBtn.addEventListener('mouseenter', function() {
+                this.style.transform = 'translateY(-1px)';
+                this.style.boxShadow = '0 4px 8px rgba(102, 126, 234, 0.3)';
+            });
+            copyBtn.addEventListener('mouseleave', function() {
+                this.style.transform = 'translateY(0)';
+                this.style.boxShadow = 'none';
+            });
+            copyBtn.addEventListener('click', function() {
+                const magnetUrl = magnet.magnetUrl || magnet.magnet || magnet.url;
+                if (magnetUrl) {
+                    navigator.clipboard.writeText(magnetUrl).then(() => {
+                        const oldText = copyBtn.textContent;
+                        copyBtn.textContent = '✅ 已复制';
+                        copyBtn.style.background = '#28a745';
+                        setTimeout(() => {
+                            copyBtn.textContent = oldText;
+                            copyBtn.style.background = 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)';
+                        }, 2000);
+                    }).catch(() => {
+                        // 备用复制方法
+                        const textarea = document.createElement('textarea');
+                        textarea.value = magnetUrl;
+                        document.body.appendChild(textarea);
+                        textarea.select();
+                        document.execCommand('copy');
+                        document.body.removeChild(textarea);
+                        
+                        const oldText = copyBtn.textContent;
+                        copyBtn.textContent = '✅ 已复制';
+                        copyBtn.style.background = '#28a745';
+                        setTimeout(() => {
+                            copyBtn.textContent = oldText;
+                            copyBtn.style.background = 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)';
+                        }, 2000);
+                    });
+                }
+            });
+            
+            actionCell.appendChild(copyBtn);
+            row.appendChild(actionCell);
+            
+            tbody.appendChild(row);
+        });
+        table.appendChild(tbody);
+        
+        // 添加统计信息
+        const statsDiv = document.createElement('div');
+        statsDiv.style.cssText = `
+            margin-top: 10px;
+            padding: 10px;
+            background: #f8f9fa;
+            border-radius: 4px;
+            border-left: 4px solid #667eea;
+            font-size: 12px;
+            color: #666;
+        `;
+        statsDiv.innerHTML = `
+            共找到 <strong>${data.length}</strong> 个磁力链接
+        `;
+        
+        container.innerHTML = '';
+        container.appendChild(table);
+        container.appendChild(statsDiv);
+    }
+    
+    // 处理JAVBUS年龄验证
+    function passAgeVerification() {
+        return new Promise((resolve) => {
+            console.log('EMBY Checker: 尝试通过JAVBUS年龄验证');
+            
+            // JAVBUS年龄验证机制：需要设置特定的cookie
+            // 尝试多个可能的cookie组合
+            const cookieAttempts = [
+                'existmag=all',
+                'agegate=1',
+                'over18=1',
+                'age_verified=1',
+                'agecheck=1',
+                'age=18',
+                'over18=yes',
+                'adult=1',
+                'agegate=1; existmag=all',
+                'over18=1; existmag=all'
+            ];
+            
+            let currentIndex = 0;
+            let ageVerified = false;
+            
+            function tryNextCookie() {
+                if (currentIndex >= cookieAttempts.length) {
+                    console.log('EMBY Checker: 所有cookie尝试完毕，年龄验证状态:', ageVerified ? '通过' : '未通过');
+                    resolve(ageVerified);
+                    return;
+                }
+                
+                const cookies = cookieAttempts[currentIndex];
+                console.log(`EMBY Checker: 尝试cookie组合 ${currentIndex + 1}/${cookieAttempts.length}:`, cookies);
+                
+                // 使用一个简单的测试URL
+                const testUrl = 'https://www.javbus.com/SSIS-795';
+                
+                GM_xmlhttpRequest({
+                    method: 'GET',
+                    url: testUrl,
+                    headers: {
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                        'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+                        'Referer': 'https://www.javbus.com/',
+                        'Cookie': cookies
+                    },
+                    onload: function(response) {
+                        console.log(`EMBY Checker: Cookie组合 ${currentIndex + 1} 响应状态:`, response.status);
+                        
+                        if (response.status !== 200) {
+                            console.log(`EMBY Checker: Cookie组合 ${currentIndex + 1} 响应状态码不是200，尝试下一个`);
+                            currentIndex++;
+                            tryNextCookie();
+                            return;
+                        }
+                        
+                        // 检查响应中是否包含年龄验证内容
+                        const hasAgeVerify = response.responseText.includes('你是否已經成年') || 
+                                           response.responseText.includes('年龄验证') ||
+                                           response.responseText.includes('age verification') ||
+                                           response.responseText.includes('请确认您已年满18岁');
+                        
+                        const hasMagnetTable = response.responseText.includes('磁力名稱') || 
+                                             response.responseText.includes('檔案大小') ||
+                                             response.responseText.includes('magnet:') ||
+                                             response.responseText.includes('torrent');
+                        
+                        console.log(`EMBY Checker: Cookie组合 ${currentIndex + 1} 年龄验证内容:`, hasAgeVerify);
+                        console.log(`EMBY Checker: Cookie组合 ${currentIndex + 1} 磁力链内容:`, hasMagnetTable);
+                        
+                        // 如果没有年龄验证内容或包含磁力链内容，认为年龄验证通过
+                        if (!hasAgeVerify || hasMagnetTable) {
+                            console.log(`EMBY Checker: Cookie组合 ${currentIndex + 1} 年龄验证通过`);
+                            ageVerified = true;
+                            resolve(true);
+                            return;
+                        }
+                        
+                        // 尝试下一个cookie组合
+                        currentIndex++;
+                        tryNextCookie();
+                    },
+                    onerror: function(error) {
+                        console.error(`EMBY Checker: Cookie组合 ${currentIndex + 1} 请求失败:`, error);
+                        currentIndex++;
+                        tryNextCookie();
+                    },
+                    ontimeout: function() {
+                        console.error(`EMBY Checker: Cookie组合 ${currentIndex + 1} 请求超时`);
+                        currentIndex++;
+                        tryNextCookie();
+                    }
+                });
+            }
+            
+            // 开始尝试cookie组合
+            tryNextCookie();
+        });
+    }
+    
+    // 获取JAVBUS磁力链数据
+    async function fetchJAVBUSMagnets(videoCode, container) {
+        const url = `https://www.javbus.com/${videoCode}`;
+        console.log('EMBY Checker: fetchJAVBUSMagnets()函数被调用');
+        console.log('EMBY Checker: 番号:', videoCode);
+        console.log('EMBY Checker: 容器ID:', container.id);
+        console.log('EMBY Checker: 正在获取JAVBUS磁力链:', url);
+        
+        // 先显示加载中状态
+        container.innerHTML = `
+            <div style="text-align: center; padding: 20px; color: #666;">
+                <p>🔄 正在从JAVBUS加载磁力链...</p>
+                <p style="font-size: 12px; color: #999;">请稍候，正在获取数据...</p>
+            </div>
+        `;
+        
+        // 获取JAVBUS页面
+        console.log('EMBY Checker: 开始发送GM_xmlhttpRequest请求到:', url);
+        GM_xmlhttpRequest({
+            method: 'GET',
+            url: url,
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+                'Referer': 'https://www.javbus.com/',
+                'Cookie': 'existmag=all'
+            },
+            timeout: 20000,
+            onload: function(response) {
+                console.log('EMBY Checker: GM_xmlhttpRequest onload回调被调用，状态码:', response.status);
+                try {
+                    console.log('EMBY Checker: JAVBUS页面获取成功，状态码:', response.status);
+                    console.log('EMBY Checker: HTML长度:', response.responseText.length);
+                    
+                    if (response.status !== 200) {
+                        container.innerHTML = `<div style="text-align: center; padding: 20px; color: #dc3545; background: #fff3f3; border-radius: 4px;">
+                            <p style="font-weight: bold; margin-bottom: 10px;">❌ 获取JAVBUS页面失败</p>
+                            <p style="font-size: 12px;">HTTP状态码: ${response.status}</p>
+                            <p style="font-size: 11px; color: #666; margin-top: 10px;">请检查网络连接或稍后重试</p>
+                        </div>`;
+                        container.dataset.loaded = 'error';
+                        return;
+                    }
+                    
+                    // 解析HTML
+                    const html = response.responseText;
+                    console.log('EMBY Checker: HTML内容前200字符:', html.substring(0, 200));
+                    
+                    // 提取 gid, uc, img 变量
+                    const gidMatch = html.match(/var\s+gid\s*=\s*(\d+)\s*;/);
+                    const ucMatch = html.match(/var\s+uc\s*=\s*(\d+)\s*;/);
+                    const imgMatch = html.match(/var\s+img\s*=\s*'([^']+)'\s*;/);
+                    
+                    if (gidMatch && ucMatch && imgMatch) {
+                        const gid = gidMatch[1];
+                        const uc = ucMatch[1];
+                        const img = imgMatch[1];
+                        console.log('EMBY Checker: 提取到变量 - gid:', gid, 'uc:', uc, 'img:', img);
+                        
+                        // 调用API获取磁力链数据
+                        const apiUrl = `https://www.javbus.com/ajax/uncledatoolsbyajax.php?gid=${gid}&lang=zh&img=${encodeURIComponent(img)}&uc=${uc}`;
+                        console.log('EMBY Checker: 调用API:', apiUrl);
+                        
+                        GM_xmlhttpRequest({
+                            method: 'GET',
+                            url: apiUrl,
+                            headers: {
+                                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                                'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+                                'Referer': url,
+                                'Cookie': 'existmag=all',
+                                'X-Requested-With': 'XMLHttpRequest'
+                            },
+                            timeout: 15000,
+                            onload: function(apiResponse) {
+                                console.log('EMBY Checker: API响应状态码:', apiResponse.status);
+                                if (apiResponse.status !== 200) {
+                                    container.innerHTML = `<div style="text-align: center; padding: 20px; color: #dc3545; background: #fff3f3; border-radius: 4px;">
+                                        <p style="font-weight: bold; margin-bottom: 10px;">❌ 获取磁力链数据失败</p>
+                                        <p style="font-size: 12px;">API状态码: ${apiResponse.status}</p>
+                                    </div>`;
+                                    container.dataset.loaded = 'error';
+                                    return;
+                                }
+                                
+                                const apiHtml = apiResponse.responseText;
+                                console.log('EMBY Checker: API返回HTML长度:', apiHtml.length);
+                                
+                                // 解析API返回的HTML片段
+                                const parser = new DOMParser();
+                                const doc = parser.parseFromString(`<table><tbody>${apiHtml}</tbody></table>`, 'text/html');
+                                const rows = doc.querySelectorAll('tr');
+                                
+                                const magnetData = [];
+                                rows.forEach(row => {
+                                    const cells = row.querySelectorAll('td');
+                                    if (cells.length >= 3) {
+                                        const nameCell = cells[0];
+                                        const sizeCell = cells[1];
+                                        const dateCell = cells[2];
+                                        
+                                        // 提取名称和链接
+                                        const nameLink = nameCell.querySelector('a');
+                                        const sizeLink = sizeCell.querySelector('a');
+                                        const dateLink = dateCell.querySelector('a');
+                                        
+                                        if (nameLink && nameLink.href.startsWith('magnet:')) {
+                                            const nameText = nameLink.textContent.trim();
+                                            const sizeText = sizeLink ? sizeLink.textContent.trim() : '';
+                                            const dateText = dateLink ? dateLink.textContent.trim() : '';
+                                            
+                                            // 从nameCell的HTML中提取标签
+                                            const nameHTML = nameCell.innerHTML;
+                                            const hasHD = nameHTML.includes('高清') || nameText.includes('高清');
+                                            const hasSub = nameHTML.includes('字幕') || nameText.includes('字幕');
+                                            
+                                            magnetData.push({
+                                                name: nameText,
+                                                size: sizeText,
+                                                date: dateText,
+                                                magnetUrl: nameLink.href,
+                                                hasSub: hasSub,
+                                                hasHD: hasHD
+                                            });
+                                        }
+                                    }
+                                });
+                                
+                                console.log('EMBY Checker: 从API提取到磁力链数据数量:', magnetData.length);
+                                
+                                if (magnetData.length > 0) {
+                                    // 对磁力链数据进行排序：有字幕的排在最前面
+                                    magnetData.sort((a, b) => {
+                                        if (a.hasSub && !b.hasSub) return -1;
+                                        if (!a.hasSub && b.hasSub) return 1;
+                                        return 0;
+                                    });
+                                    
+                                    renderMagnetData(magnetData, container);
+                                    container.dataset.loaded = 'true';
+                                    
+                                    // 更新JAVBUS磁力链角标
+                                    const badge = document.getElementById('javbus-magnet-badge');
+                                    if (badge) {
+                                        badge.textContent = magnetData.length;
+                                        badge.style.display = 'flex';
+                                    }
+                                } else {
+                                    container.innerHTML = `<div style="text-align: center; padding: 20px; color: #666; background: #f8f9fa; border-radius: 4px;">
+                                        <p style="font-weight: bold; margin-bottom: 10px;">⚠️ 未找到磁力链数据</p>
+                                        <p style="font-size: 12px;">API返回的数据中没有磁力链接</p>
+                                        <p style="font-size: 11px; margin-top: 10px;">
+                                            <a href="${url}" target="_blank" style="color: #667eea;">🔗 点击查看JAVBUS原页面</a>
+                                        </p>
+                                    </div>`;
+                                    container.dataset.loaded = 'error';
+                                    
+                                    // 隐藏角标
+                                    const badge = document.getElementById('javbus-magnet-badge');
+                                    if (badge) {
+                                        badge.style.display = 'none';
+                                    }
+                                }
+                            },
+                            onerror: function(error) {
+                                console.error('EMBY Checker: API请求失败:', error);
+                                container.innerHTML = `<div style="text-align: center; padding: 20px; color: #dc3545; background: #fff3f3; border-radius: 4px;">
+                                    <p style="font-weight: bold; margin-bottom: 10px;">❌ API请求失败</p>
+                                    <p style="font-size: 12px;">错误: ${error.toString()}</p>
+                                </div>`;
+                                container.dataset.loaded = 'error';
+                            },
+                            ontimeout: function() {
+                                console.error('EMBY Checker: API请求超时');
+                                container.innerHTML = `<div style="text-align: center; padding: 20px; color: #dc3545; background: #fff3f3; border-radius: 4px;">
+                                    <p style="font-weight: bold; margin-bottom: 10px;">❌ API请求超时</p>
+                                    <p style="font-size: 12px;">连接超时，请稍后重试</p>
+                                </div>`;
+                                container.dataset.loaded = 'error';
+                            }
+                        });
+                        
+                    } else {
+                        console.warn('EMBY Checker: 无法提取gid/uc/img，回退到HTML解析');
+                        // 回退到原有的HTML解析逻辑
+                        fallbackParseMagnetsFromHTML(html, url, container);
+                    }
+                    
+                } catch (error) {
+                    console.error('EMBY Checker: 解析JAVBUS页面失败:', error);
+                    container.innerHTML = `<div style="text-align: center; padding: 20px; color: #dc3545; background: #fff3f3; border-radius: 4px;">
+                        <p style="font-weight: bold; margin-bottom: 10px;">❌ 解析页面失败</p>
+                        <p style="font-size: 12px;">错误: ${error.message}</p>
+                    </div>`;
+                    container.dataset.loaded = 'error';
+                }
+            },
+            onerror: function(error) {
+                console.error('EMBY Checker: 获取JAVBUS页面失败:', error);
+                container.innerHTML = `<div style="text-align: center; padding: 20px; color: #dc3545; background: #fff3f3; border-radius: 4px;">
+                    <p style="font-weight: bold; margin-bottom: 10px;">❌ 无法连接到JAVBUS</p>
+                    <p style="font-size: 12px;">请检查网络连接或VPN设置</p>
+                    <p style="font-size: 11px; margin-top: 10px;">错误详情: ${error.toString()}</p>
+                </div>`;
+                container.dataset.loaded = 'error';
+            },
+            ontimeout: function() {
+                console.error('EMBY Checker: 获取JAVBUS页面超时');
+                container.innerHTML = `<div style="text-align: center; padding: 20px; color: #dc3545; background: #fff3f3; border-radius: 4px;">
+                    <p style="font-weight: bold; margin-bottom: 10px;">❌ 连接超时</p>
+                    <p style="font-size: 12px;">连接JAVBUS超时（20秒），请稍后重试</p>
+                </div>`;
+                container.dataset.loaded = 'error';
+            }
+        });
+        
+        // 添加一个超时检查，如果请求长时间没有响应，显示错误
+        setTimeout(() => {
+            if (!container.dataset.loaded || container.dataset.loaded === 'false') {
+                console.error('EMBY Checker: GM_xmlhttpRequest请求长时间未响应，可能被阻止');
+                container.innerHTML = `<div style="text-align: center; padding: 20px; color: #dc3545; background: #fff3f3; border-radius: 4px;">
+                    <p style="font-weight: bold; margin-bottom: 10px;">❌ 请求超时</p>
+                    <p style="font-size: 12px;">JAVBUS页面请求超时（30秒），可能被网络阻止</p>
+                    <p style="font-size: 11px; margin-top: 10px;">请检查VPN设置或稍后重试</p>
+                </div>`;
+                container.dataset.loaded = 'error';
+            }
+        }, 30000);
+    }
+    
+    // 回退函数：从HTML解析磁力链（原有逻辑）
+    function fallbackParseMagnetsFromHTML(html, url, container) {
+        const parser = new DOMParser();
+        const doc = parser.parseFromString(html, 'text/html');
+        
+        // 直接从HTML中提取磁力链数据
+        const magnetLinks = doc.querySelectorAll('a[href^="magnet:"]');
+        console.log('EMBY Checker: 回退解析 - 找到磁力链接数量:', magnetLinks.length);
+        
+        if (magnetLinks.length === 0) {
+            console.error('EMBY Checker: 回退解析 - 未找到任何磁力链接');
+            container.innerHTML = `<div style="text-align: center; padding: 20px; color: #666; background: #f8f9fa; border-radius: 4px;">
+                <p style="font-weight: bold; margin-bottom: 10px;">⚠️ 未找到磁力链数据</p>
+                <p style="font-size: 12px; margin-bottom: 10px;">可能的原因：</p>
+                <ul style="text-align: left; font-size: 11px; color: #666; margin-left: 20px;">
+                    <li>该番号在JAVBUS上不存在磁力链</li>
+                    <li>JAVBUS页面需要登录查看</li>
+                    <li>网络被阻止或VPN问题</li>
+                </ul>
+                <p style="font-size: 11px; margin-top: 10px;">
+                    <a href="${url}" target="_blank" style="color: #667eea;">🔗 点击查看JAVBUS原页面</a>
+                </p>
+            </div>`;
+            container.dataset.loaded = 'error';
+            return;
+        }
+        
+        // 提取磁力链数据
+        const magnetData = [];
+        
+        for (let i = 0; i < magnetLinks.length; i++) {
+            const magnetLink = magnetLinks[i];
+            const row = magnetLink.closest('tr');
+            
+            if (row) {
+                const cells = row.querySelectorAll('td');
+                if (cells.length >= 3) {
+                    const nameCell = cells[0];
+                    const sizeCell = cells[1];
+                    const dateCell = cells[2];
+                    
+                    // 提取名称和标签
+                    const nameText = nameCell.textContent.trim();
+                    const sizeText = sizeCell.textContent.trim();
+                    const dateText = dateCell.textContent.trim();
+                    
+                    // 检查是否有高清和字幕标签
+                    const hasHD = nameText.includes('高清');
+                    const hasSub = nameText.includes('字幕');
+                    
+                    magnetData.push({
+                        name: nameText,
+                        size: sizeText,
+                        date: dateText,
+                        magnetUrl: magnetLink.href,
+                        hasSub: hasSub,
+                        hasHD: hasHD
+                    });
+                }
+            }
+        }
+        
+        console.log('EMBY Checker: 回退解析 - 提取到磁力链数据数量:', magnetData.length);
+        
+        if (magnetData.length > 0) {
+            // 对磁力链数据进行排序：有字幕的排在最前面
+            magnetData.sort((a, b) => {
+                if (a.hasSub && !b.hasSub) return -1;
+                if (!a.hasSub && b.hasSub) return 1;
+                return 0;
+            });
+            
+            renderMagnetData(magnetData, container);
+            container.dataset.loaded = 'true';
+            
+            // 更新JAVBUS磁力链角标
+            const badge = document.getElementById('javbus-magnet-badge');
+            if (badge) {
+                badge.textContent = magnetData.length;
+                badge.style.display = 'flex';
+            }
+        } else {
+            container.innerHTML = `<div style="text-align: center; padding: 20px; color: #666; background: #f8f9fa; border-radius: 4px;">
+                <p style="font-weight: bold; margin-bottom: 10px;">⚠️ 未找到磁力链数据</p>
+                <p style="font-size: 12px; margin-bottom: 10px;">可能的原因：</p>
+                <ul style="text-align: left; font-size: 11px; color: #666; margin-left: 20px;">
+                    <li>该番号在JAVBUS上不存在磁力链</li>
+                    <li>JAVBUS页面结构已改变</li>
+                    <li>数据需要登录后查看</li>
+                </ul>
+                <p style="font-size: 11px; margin-top: 10px;">
+                    <a href="${url}" target="_blank" style="color: #667eea;">🔗 点击查看JAVBUS原页面</a>
+                </p>
+            </div>`;
+            container.dataset.loaded = 'error';
+            
+            // 隐藏角标
+            const badge = document.getElementById('javbus-magnet-badge');
+            if (badge) {
+                badge.style.display = 'none';
+            }
+        }
+    }
+    
+    // 延迟添加双标签磁力链（确保页面加载完成）
+    addDualTabsForMagnets();
 
 })();
