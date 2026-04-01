@@ -35,6 +35,107 @@
     console.log('当前 URL:', window.location.href);
     console.log('当前路径:', window.location.pathname);
     console.log('查询参数:', window.location.search);
+
+    // ========== [新增] 自动静默过 Cloudflare 验证 ==========
+    function bypassCloudflare() {
+        // 检测是否是 Cloudflare 验证页面（多种检测方式）
+        const title = document.title || '';
+        const bodyText = document.body?.innerText || '';
+        const bodyHTML = document.body?.innerHTML || '';
+        
+        const isCFPage = 
+            // 标题检测
+            title.includes('Just a moment') || 
+            title.includes('请稍候') ||
+            title.includes('Attention Required') ||
+            // 内容检测
+            bodyText.includes('Checking your browser') ||
+            bodyText.includes('正在检查您的浏览器') ||
+            bodyText.includes('Verify you are human') ||
+            bodyText.includes('验证您是真人') ||
+            // Turnstile 验证框检测
+            document.querySelector('input[name="cf-turnstile-response"]') !== null ||
+            document.querySelector('#cf-turnstile') !== null ||
+            document.querySelector('.cf-turnstile') !== null ||
+            document.querySelector('[data-cf-turnstile]') !== null ||
+            // Cloudflare 挑战页面特征
+            document.querySelector('#challenge-form') !== null ||
+            document.querySelector('.challenge-form') !== null ||
+            // JAVDB 特定检测
+            bodyHTML.includes('cf-turnstile') ||
+            bodyHTML.includes('turnstile') && bodyHTML.includes('challenge');
+        
+        if (isCFPage) {
+            console.log('%c🛡️ Cloudflare/Turnstile 验证页面检测，等待自动完成...', 'color: orange; font-size: 14px;');
+            
+            // 尝试自动点击验证复选框（如果存在）
+            const turnstileCheckbox = document.querySelector('.cf-turnstile input[type="checkbox"]') || 
+                                     document.querySelector('input[type="checkbox"][name*="cf"]') ||
+                                     document.querySelector('[data-cf-turnstile] input');
+            
+            if (turnstileCheckbox) {
+                console.log('%c🖱️ 发现验证复选框，尝试自动点击...', 'color: blue;');
+                setTimeout(() => {
+                    turnstileCheckbox.click();
+                    console.log('%c✅ 已自动点击验证复选框', 'color: green;');
+                }, 1000);
+            }
+            
+            // 尝试点击验证按钮
+            const verifyBtn = document.querySelector('input[type="submit"]') || 
+                             document.querySelector('.cf-browser-verification button') ||
+                             document.querySelector('#challenge-form input[type="submit"]') ||
+                             document.querySelector('button[type="submit"]');
+            
+            if (verifyBtn && !turnstileCheckbox) {
+                setTimeout(() => {
+                    verifyBtn.click();
+                    console.log('%c✅ 已自动点击验证按钮', 'color: green;');
+                }, 1500);
+            }
+            
+            // 监听页面变化，一旦验证完成就继续执行
+            let checkCount = 0;
+            const maxChecks = 60; // 最多检查60次（约60秒）
+            
+            const checkInterval = setInterval(() => {
+                checkCount++;
+                const currentTitle = document.title || '';
+                const isStillCF = currentTitle.includes('Just a moment') || 
+                                  currentTitle.includes('请稍候') ||
+                                  currentTitle.includes('Attention Required') ||
+                                  document.querySelector('.cf-turnstile') !== null ||
+                                  document.querySelector('#challenge-form') !== null;
+                
+                if (!isStillCF || checkCount >= maxChecks) {
+                    clearInterval(checkInterval);
+                    if (!isStillCF) {
+                        console.log('%c✅ Cloudflare 验证已通过，继续加载脚本...', 'color: green;');
+                        initMainScript();
+                    } else {
+                        console.log('%c⚠️ Cloudflare 验证超时，尝试直接加载脚本...', 'color: orange;');
+                        initMainScript();
+                    }
+                }
+            }, 1000);
+            
+            return true; // 表示正在等待验证
+        }
+        return false; // 不是验证页面
+    }
+    
+    // 立即尝试跳过 Cloudflare
+    if (bypassCloudflare()) {
+        console.log('等待 Cloudflare 验证完成...');
+        // 如果检测到验证页面，延迟执行主逻辑
+        return;
+    }
+    
+    // 执行主脚本逻辑
+    initMainScript();
+    
+    // 主脚本入口函数
+    function initMainScript() {
     
     // 立即检查页面类型
     const isDetailPage = window.location.pathname.startsWith('/v/');
@@ -4091,5 +4192,7 @@
     
     // 延迟添加双标签磁力链（确保页面加载完成）
     addDualTabsForMagnets();
+
+    } // initMainScript 函数结束
 
 })();
