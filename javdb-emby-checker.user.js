@@ -36,6 +36,9 @@
     console.log('当前路径:', window.location.pathname);
     console.log('查询参数:', window.location.search);
 
+    // 保存原始 GM_xmlhttpRequest 引用（必须在 CF_HANDLER 之前定义）
+    const originalGMXHR = GM_xmlhttpRequest.bind({});
+
     // ========== [新增] 全局 Cloudflare 验证自动处理模块 ==========
     const CF_HANDLER = {
         isVerifying: false,
@@ -152,10 +155,7 @@
     };
 
     // ========== [新增] 包装 GM_xmlhttpRequest 自动处理 Cloudflare 验证 ==========
-    // 保存原始函数引用，用于实际发送请求
-    const originalGMXHR = GM_xmlhttpRequest.bind({});
-    
-    // 在脚本作用域内覆盖 GM_xmlhttpRequest
+    // 在脚本作用域内覆盖 GM_xmlhttpRequest（originalGMXHR 已在前面定义）
     GM_xmlhttpRequest = requestWithCFHandling;
     
     function requestWithCFHandling(options) {
