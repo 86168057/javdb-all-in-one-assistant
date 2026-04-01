@@ -36,6 +36,189 @@
     console.log('当前路径:', window.location.pathname);
     console.log('查询参数:', window.location.search);
 
+    // ========== [新增] 全局 Cloudflare 验证自动处理模块 ==========
+    const CF_HANDLER = {
+        isVerifying: false,
+        verifyTab: null,
+        pendingRequests: [],
+        
+        // 检测响应是否包含 Cloudflare 验证
+        isCFChallenge(response) {
+            if (!response || !response.responseText) return false;
+            const html = response.responseText;
+            return html.includes('cf-turnstile') || 
+                   html.includes('challenge-form') ||
+                   html.includes('Checking your browser') ||
+                   html.includes('Just a moment') ||
+                   html.includes('验证您是真人') ||
+                   html.includes('正在检查您的浏览器') ||
+                   (response.status === 403 && html.includes('cloudflare'));
+        },
+        
+        // 自动后台打开验证页面
+        async autoVerify(url) {
+            if (this.isVerifying) {
+                console.log('🛡️ 验证已在进行中，等待完成...');
+                await this.waitForVerify();
+                return true;
+            }
+            
+            this.isVerifying = true;
+            console.log('%c🛡️ 检测到 Cloudflare 验证，后台自动处理中...', 'color: orange; font-size: 14px;');
+            
+            // 在后台打开验证页面（使用 javdb 首页作为验证入口）
+            const verifyUrl = 'https://javdb.com';
+            this.verifyTab = window.open(verifyUrl, '_blank', 'noopener,noreferrer');
+            
+            if (!this.verifyTab) {
+                console.warn('⚠️ 无法打开验证窗口，可能被浏览器阻止');
+                this.isVerifying = false;
+                return false;
+            }
+            
+            // 等待验证完成（最多30秒）
+            let checkCount = 0;
+            const maxChecks = 30;
+            
+            while (checkCount < maxChecks) {
+                await this.sleep(1000);
+                checkCount++;
+                
+                try {
+                    // 检查验证是否完成（通过测试请求）
+                    const testResponse = await this.testRequest(url);
+                    if (testResponse && !this.isCFChallenge(testResponse)) {
+                        console.log('%c✅ Cloudflare 验证已通过！', 'color: green; font-size: 14px;');
+                        this.closeVerifyTab();
+                        this.isVerifying = false;
+                        return true;
+                    }
+                } catch (e) {
+                    // 继续等待
+                }
+            }
+            
+            console.warn('⚠️ 验证超时，关闭验证窗口');
+            this.closeVerifyTab();
+            this.isVerifying = false;
+            return false;
+        },
+        
+        // 测试请求是否通过
+        testRequest(url) {
+            return new Promise((resolve, reject) => {
+                GM_xmlhttpRequest({
+                    method: 'HEAD',
+                    url: url,
+                    timeout: 5000,
+                    onload: resolve,
+                    onerror: reject,
+                    ontimeout: reject
+                });
+            });
+        },
+        
+        // 等待验证完成
+        waitForVerify() {
+            return new Promise(resolve => {
+                const check = setInterval(() => {
+                    if (!this.isVerifying) {
+                        clearInterval(check);
+                        resolve();
+                    }
+                }, 500);
+            });
+        },
+        
+        // 关闭验证标签页
+        closeVerifyTab() {
+            if (this.verifyTab && !this.verifyTab.closed) {
+                try {
+                    this.verifyTab.close();
+                    console.log('🗑️ 已关闭验证标签页');
+                } catch (e) {
+                    console.log('无法自动关闭验证标签页');
+                }
+            }
+            this.verifyTab = null;
+        },
+        
+        // 延迟函数
+        sleep(ms) {
+            return new Promise(resolve => setTimeout(resolve, ms));
+        }
+    };
+
+    // ========== [新增] 包装 GM_xmlhttpRequest 自动处理 Cloudflare 验证 ==========
+    // 保存原始函数引用，用于实际发送请求
+    const originalGMXHR = GM_xmlhttpRequest.bind({});
+    
+    // 在脚本作用域内覆盖 GM_xmlhttpRequest
+    GM_xmlhttpRequest = requestWithCFHandling;
+    
+    function requestWithCFHandling(options) {
+        const originalOnload = options.onload;
+        const originalOnerror = options.onerror;
+        const url = options.url;
+        
+        options.onload = async function(response) {
+            // 检测是否遇到 Cloudflare 验证
+            if (CF_HANDLER.isCFChallenge(response)) {
+                console.log('%c🛡️ 请求遇到 Cloudflare 验证，后台自动处理...', 'color: orange;', url);
+                
+                const verified = await CF_HANDLER.autoVerify(url);
+                if (verified) {
+                    // 验证通过，重试原请求（使用原始函数避免循环）
+                    console.log('🔄 验证完成，重新发送请求:', url);
+                    originalGMXHR({
+                        ...options,
+                        onload: originalOnload,
+                        onerror: originalOnerror
+                    });
+                    return;
+                }
+            }
+            
+            // 正常响应或验证失败，调用原始回调
+            if (originalOnload) {
+                originalOnload(response);
+            }
+        };
+        
+        options.onerror = async function(error) {
+            // 请求失败也可能是验证导致的
+            console.log('⚠️ 请求失败，尝试检测是否是验证问题:', url);
+            
+            // 尝试快速测试
+            try {
+                const testResponse = await CF_HANDLER.testRequest(url);
+                if (CF_HANDLER.isCFChallenge(testResponse)) {
+                    console.log('%c🛡️ 检测到 Cloudflare 验证，后台自动处理...', 'color: orange;');
+                    const verified = await CF_HANDLER.autoVerify(url);
+                    if (verified) {
+                        // 验证通过，重试原请求（使用原始函数）
+                        console.log('🔄 验证完成，重新发送请求:', url);
+                        originalGMXHR({
+                            ...options,
+                            onload: originalOnload,
+                            onerror: originalOnerror
+                        });
+                        return;
+                    }
+                }
+            } catch (e) {
+                // 测试也失败，调用原始错误处理
+            }
+            
+            if (originalOnerror) {
+                originalOnerror(error);
+            }
+        };
+        
+        // 发送请求
+        return GM_xmlhttpRequest(options);
+    }
+
     // ========== [新增] 自动静默过 Cloudflare 验证 ==========
     function bypassCloudflare() {
         // 检测是否是 Cloudflare 验证页面（多种检测方式）
