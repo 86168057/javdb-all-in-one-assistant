@@ -110,9 +110,8 @@
         // 测试请求是否通过（使用原始函数避免递归）
         testRequest(url) {
             return new Promise((resolve, reject) => {
-                // 使用原始 GM_xmlhttpRequest 避免递归
-                const xhr = typeof originalGMXHR !== 'undefined' ? originalGMXHR : GM_xmlhttpRequest;
-                xhr({
+                // 必须使用原始 GM_xmlhttpRequest，避免递归
+                originalGMXHR({
                     method: 'HEAD',
                     url: url,
                     timeout: 5000,
@@ -155,8 +154,9 @@
     };
 
     // ========== [新增] 包装 GM_xmlhttpRequest 自动处理 Cloudflare 验证 ==========
-    // 在脚本作用域内覆盖 GM_xmlhttpRequest（originalGMXHR 已在前面定义）
-    GM_xmlhttpRequest = requestWithCFHandling;
+    // 注意：当前版本暂时禁用自动验证功能，避免递归问题
+    // 如需启用 Cloudflare 自动验证，需要重新设计实现方案
+    // GM_xmlhttpRequest = requestWithCFHandling;
     
     function requestWithCFHandling(options) {
         const originalOnload = options.onload;
