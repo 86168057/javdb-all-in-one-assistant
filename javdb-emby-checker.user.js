@@ -104,10 +104,12 @@
             return false;
         },
         
-        // 测试请求是否通过
+        // 测试请求是否通过（使用原始函数避免递归）
         testRequest(url) {
             return new Promise((resolve, reject) => {
-                GM_xmlhttpRequest({
+                // 使用原始 GM_xmlhttpRequest 避免递归
+                const xhr = typeof originalGMXHR !== 'undefined' ? originalGMXHR : GM_xmlhttpRequest;
+                xhr({
                     method: 'HEAD',
                     url: url,
                     timeout: 5000,
